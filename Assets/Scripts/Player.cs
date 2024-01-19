@@ -16,11 +16,20 @@ public class Player : MonoBehaviour
     private Vector3 currentCell;
     public Transform selectorCube;
     public GameObject placedCube;
+    public GameObject _cellPrefab;
     public GameObject currentOverlap;
     public List<GameObject> citizens;
     public List<Vector3> liveCells;
     public Selector selectorScript;
-    public Camera camera;
+    public Camera _camera;
+    //public HashSet<Vector2Int> _checkedCells = new HashSet<Vector2Int>();
+    public HashSet<Vector2Int> _deadCellsToCheck = new HashSet<Vector2Int>();
+    public HashSet<Vector2Int> _newCitizens = new HashSet<Vector2Int>();
+    public HashSet<Vector2Int> _dyingCells = new HashSet<Vector2Int>();
+    public HashSet<GameObject> _cellPool = new HashSet<GameObject>();
+
+    public Dictionary<Vector2Int, GameObject> _citizens = new Dictionary<Vector2Int, GameObject>();
+
 
     public bool overlapping = false;
     public bool occupied = false;
@@ -29,6 +38,9 @@ public class Player : MonoBehaviour
     public float timer = 1f;
     public float zoomSpeed;
     public float gameSpeed;
+    public float _cachedMouseY;
+    public bool _shiftHeld;
+
     private void Start()
     {
         citizens = new List<GameObject>();
@@ -41,52 +53,55 @@ public class Player : MonoBehaviour
         mouseWheel = Input.GetAxis("Mouse ScrollWheel");
         mouseClick = Input.GetAxis("Fire1");
 
+        
+
         transform.Translate(Vector3.up * vertical);
         transform.Translate(Vector3.right * horizontal);
         mouseScreenPos = new Vector3(Input.mousePosition.x, Input.mousePosition.y, transform.position.z);
 
         mouseWorldPos = Camera.main.ScreenToWorldPoint(mouseScreenPos);
 
-        camera.orthographicSize -= mouseWheel * zoomSpeed;
+        _camera.orthographicSize -= mouseWheel * zoomSpeed;
 
-        if (camera.orthographicSize < 0f)
-            camera.orthographicSize = 0f;
+        if (_camera.orthographicSize < 0f)
+            _camera.orthographicSize = 0f;
 
-        selectorCube.position = new Vector3(Mathf.Floor(Mathf.Abs(mouseWorldPos.x)) * Mathf.Sign(mouseWorldPos.x), Mathf.Floor(Mathf.Abs(mouseWorldPos.y)) * Mathf.Sign(mouseWorldPos.y), 0);
+        if (_shiftHeld)
+        {
+            selectorCube.position = new Vector3(Mathf.Floor(Mathf.Abs(mouseWorldPos.x)) * Mathf.Sign(mouseWorldPos.x), _cachedMouseY, 0);
+        }
+        else
+            selectorCube.position = new Vector3(Mathf.Floor(Mathf.Abs(mouseWorldPos.x)) * Mathf.Sign(mouseWorldPos.x), Mathf.Floor(Mathf.Abs(mouseWorldPos.y)) * Mathf.Sign(mouseWorldPos.y), 0);
 
         if (Input.GetMouseButton(0))
         {
-            overlapping = selectorScript.CheckOverlap();
-
-            if (!overlapping)
-            {
-                Debug.Log(overlapping);
-                GameObject prefab;
-
-                prefab = Instantiate(placedCube, selectorCube.position, Quaternion.identity);                             
-                prefab.tag = "Alive";
-                prefab.name = "NewBirth";
-                
-                citizens.Add(prefab);
-                overlapping = true;
-            }
+            if (!_citizens.ContainsKey(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)))
+                _citizens.Add(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y), GetPooledCell(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)));        
         }
 
         if (Input.GetMouseButton(1))
         {
-            overlapping = selectorScript.CheckOverlap();
-
-            if (overlapping)
+            if (_citizens.ContainsKey(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)))
             {
-                citizens.Remove(currentOverlap);
-                Destroy(currentOverlap);
-                overlapping = false;
+                ReturnCellToPool(_citizens[new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)]);
+                _citizens.Remove(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y));
             }
         }
 
         if (Input.GetKeyDown(KeyCode.Space))
+        {
             execute = true;
-        
+        }
+
+        if (Input.GetKey(KeyCode.LeftShift))
+        {
+            _cachedMouseY = selectorCube.position.y;
+            _shiftHeld = true;
+        }
+        else
+            _shiftHeld = false;
+
+
 
         if (Input.GetKey(KeyCode.E))
             gameSpeed -= .001f;
@@ -96,6 +111,7 @@ public class Player : MonoBehaviour
 
         if (Input.GetKey(KeyCode.Q))
             gameSpeed += .001f;
+
 
 
         if (execute && timer > gameSpeed)
@@ -112,178 +128,133 @@ public class Player : MonoBehaviour
 
     public void EvaluateCells()
     {
-        foreach (GameObject citizen in citizens)
+        _deadCellsToCheck.Clear();
+        
+        _newCitizens.Clear();
+        _dyingCells.Clear();
+
+        foreach (var cell in _citizens)
         {
-            Collider2D[] hitColliders;
+            int neighbors = CheckNeighbors(cell.Key);
 
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x, citizen.transform.position.y), new Vector2(1.2f, 1.2f), 0f);
-            if (hitColliders.Length > 4)
-            {
-                citizen.tag = "Dead";
-            }
-            else if (hitColliders.Length < 3)
-            {
-                citizen.tag = "Dead";
-            }
+            if (!ApplyLiveRules(neighbors))
+                _dyingCells.Add(cell.Key);
+        }
 
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x + 1, citizen.transform.position.y), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
+        foreach (var deadCell in _deadCellsToCheck)
+        {
+            int neighbors = CheckNeighbors(deadCell, 4, true);
 
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x - 1, citizen.transform.position.y), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x, citizen.transform.position.y + 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x, citizen.transform.position.y + 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x, citizen.transform.position.y + 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x, citizen.transform.position.y - 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x, citizen.transform.position.y - 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x, citizen.transform.position.y - 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x + 1, citizen.transform.position.y + 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y + 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y + 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x - 1, citizen.transform.position.y - 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y - 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y - 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x + 1, citizen.transform.position.y - 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y - 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x + 1, citizen.transform.position.y - 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
-
-            hitColliders = Physics2D.OverlapBoxAll(new Vector2(citizen.transform.position.x - 1, citizen.transform.position.y + 1), new Vector2(1.2f, 1.2f), 0f);
-            foreach (Collider2D collider in hitColliders)
-            {
-                if (collider.transform.position == new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y + 1, citizen.transform.position.z))
-                {
-                    occupied = true;
-                }
-            }
-            if (hitColliders.Length == 3 && !occupied)
-            {
-                liveCells.Add(new Vector3(citizen.transform.position.x - 1, citizen.transform.position.y + 1, citizen.transform.position.z));
-            }
-            else
-                occupied = false;
+            if (ApplyDeadRules(neighbors))
+                _newCitizens.Add(deadCell);
         }
 
         UpdateCells();
     }
 
-    public void UpdateCells()
+    public int CheckNeighbors(Vector2Int pos, int limit = 4, bool dead = false)
     {
-        foreach (GameObject citizen in citizens.ToList())
+        int neighbors = 0;
+        for (int x = pos.x - 1; x < pos.x + 2; x++)
         {
-            if (citizen.CompareTag("Dead"))
+            for (int y = pos.y + 1; y > pos.y - 2; y--)
             {
-                citizens.Remove(citizen);
-                Destroy(citizen);
+                Vector2Int posToCheck = new(x, y);
+
+                if (posToCheck != pos)
+                {
+                    if (_citizens.ContainsKey(posToCheck))
+                        neighbors++;
+                    else if(!_deadCellsToCheck.Contains(posToCheck) && !dead)
+                        _deadCellsToCheck.Add(posToCheck);
+                }
             }
         }
 
-        liveCells = liveCells.Distinct().ToList();
+        return neighbors;
+    }
 
-        foreach (Vector3 liveCell in liveCells)
+    public bool ApplyLiveRules(int neighbors, bool liveCell = true)
+    {
+        return (neighbors == 3 || neighbors == 2);
+    }
+
+    public bool ApplyDeadRules(int neighbors)
+    {
+        return neighbors == 3;
+    }
+
+    public void UpdateCells()
+    {
+        foreach (var cell in _dyingCells)
         {
-            GameObject prefab;
-            prefab = Instantiate(placedCube, liveCell, Quaternion.identity);
-            prefab.name = "NewBirth";
-            citizens.Add(prefab);
+            ReturnCellToPool(_citizens[cell]);
+            _citizens.Remove(cell);
         }
 
-        liveCells.Clear();
+        foreach(var cell in _newCitizens)
+            _citizens.Add(cell, GetPooledCell(new Vector2(cell.x, cell.y)));      
     }
+
+    //public void UpdateCells()
+    //{
+    //    foreach (GameObject citizen in citizens.ToList())
+    //    {
+    //        if (citizen.CompareTag("Dead"))
+    //        {
+    //            citizens.Remove(citizen);
+    //            Destroy(citizen);
+    //        }
+    //    }
+
+    //    liveCells = liveCells.Distinct().ToList();
+
+    //    foreach (Vector3 liveCell in liveCells)
+    //    {
+    //        GameObject prefab;
+    //        prefab = Instantiate(placedCube, liveCell, Quaternion.identity);
+    //        prefab.name = "NewBirth";
+    //        citizens.Add(prefab);
+    //    }
+
+    //    liveCells.Clear();
+    //}
+
 
     public void ResetGame()
     {
-        foreach (GameObject citizen in citizens.ToList())
+        foreach (var citizen in _citizens)
         {
-            citizens.Remove(citizen);
-            Destroy(citizen);
+            Destroy(citizen.Value);
         }
 
         execute = false;
         timer = 0;
-        liveCells.Clear();
+        _citizens.Clear();
+    }
+
+    public GameObject GetPooledCell(Vector2 pos)
+    {
+        GameObject cell = null;
+
+        if(_cellPool.Count > 0)
+        {
+            cell = _cellPool.FirstOrDefault();
+            _cellPool.Remove(cell);
+            cell.transform.position = pos;
+            cell.SetActive(true);
+        }
+        else
+        {
+            cell = Instantiate(_cellPrefab, pos, Quaternion.identity);
+        }
+
+        return cell;
+    }
+
+    public void ReturnCellToPool(GameObject cell)
+    {
+        _cellPool.Add(cell);
+        cell.SetActive(false);
     }
 }
