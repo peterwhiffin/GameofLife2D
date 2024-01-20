@@ -28,9 +28,10 @@ public class Player : MonoBehaviour
     public HashSet<Vector2Int> _newCitizens = new HashSet<Vector2Int>();
     public HashSet<Vector2Int> _dyingCells = new HashSet<Vector2Int>();
     public HashSet<GameObject> _cellPool = new HashSet<GameObject>();
+    public HashSet<Vector2Int> _liveCells = new HashSet<Vector2Int>();
 
     public Dictionary<Vector2Int, GameObject> _citizens = new Dictionary<Vector2Int, GameObject>();
-
+    public Dictionary<Vector2Int, bool> _checkedCells = new Dictionary<Vector2Int, bool>();
 
     public bool overlapping = false;
     public bool occupied = false;
@@ -77,7 +78,10 @@ public class Player : MonoBehaviour
         if (Input.GetMouseButton(0))
         {
             if (!_citizens.ContainsKey(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)))
-                _citizens.Add(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y), GetPooledCell(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)));        
+            {
+                _citizens.Add(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y), GetPooledCell(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)));
+                _liveCells.Add(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y));
+            }
         }
 
         if (Input.GetMouseButton(1))
@@ -86,6 +90,7 @@ public class Player : MonoBehaviour
             {
                 ReturnCellToPool(_citizens[new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y)]);
                 _citizens.Remove(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y));
+                _liveCells.Remove(new Vector2Int((int)selectorCube.position.x, (int)selectorCube.position.y));
             }
         }
 
@@ -129,22 +134,21 @@ public class Player : MonoBehaviour
 
     public void EvaluateCells()
     {
-        _deadCellsToCheck.Clear();
-        
+        _deadCellsToCheck.Clear();      
         _newCitizens.Clear();
         _dyingCells.Clear();
 
-        foreach (var cell in _citizens)
+        foreach (var cell in _liveCells)
         {
-            int neighbors = CheckNeighbors(cell.Key);
+            int neighbors = CheckLiveNeighbors(cell);
 
             if (!ApplyLiveRules(neighbors))
-                _dyingCells.Add(cell.Key);
+                _dyingCells.Add(cell);
         }
 
         foreach (var deadCell in _deadCellsToCheck)
         {
-            int neighbors = CheckNeighbors(deadCell, 4, true);
+            int neighbors = CheckDeadNeighbors(deadCell);
 
             if (ApplyDeadRules(neighbors))
                 _newCitizens.Add(deadCell);
@@ -153,8 +157,7 @@ public class Player : MonoBehaviour
         UpdateCells();
     }
 
-  
-    public int CheckNeighbors(Vector2Int pos, int limit = 4, bool dead = false)
+    public int CheckLiveNeighbors(Vector2Int pos)
     {
         int neighbors = 0;
         for (int x = pos.x - 1; x < pos.x + 2; x++)
@@ -163,12 +166,39 @@ public class Player : MonoBehaviour
             {
                 Vector2Int posToCheck = new(x, y);
 
-                if (posToCheck != pos)
+                if (posToCheck == pos)
+                    continue;
+                else if (_deadCellsToCheck.Contains(posToCheck))
+                    continue;
+                else if (_liveCells.Contains(posToCheck))
+                    neighbors++;                
+                else
+                    _deadCellsToCheck.Add(posToCheck);
+            }
+        }
+
+        return neighbors;
+    }
+
+    public int CheckDeadNeighbors(Vector2Int pos)
+    {
+        int neighbors = 0;
+        for (int x = pos.x - 1; x < pos.x + 2; x++)
+        {
+            for (int y = pos.y + 1; y > pos.y - 2; y--)
+            {
+                Vector2Int posToCheck = new(x, y);
+
+                if (posToCheck == pos)
+                    continue;
+                else if (_deadCellsToCheck.Contains(posToCheck))
+                    continue;
+                else if (_liveCells.Contains(posToCheck))
                 {
-                    if (_citizens.ContainsKey(posToCheck))
-                        neighbors++;
-                    else if(!_deadCellsToCheck.Contains(posToCheck) && !dead)
-                        _deadCellsToCheck.Add(posToCheck);
+                    neighbors++;
+
+                    if (neighbors == 4)
+                        return neighbors;
                 }
             }
         }
@@ -192,36 +222,15 @@ public class Player : MonoBehaviour
         {
             ReturnCellToPool(_citizens[cell]);
             _citizens.Remove(cell);
+            _liveCells.Remove(cell);
         }
 
-        foreach(var cell in _newCitizens)
-            _citizens.Add(cell, GetPooledCell(new Vector2(cell.x, cell.y)));      
+        foreach (var cell in _newCitizens)
+        {
+            _citizens.Add(cell, GetPooledCell(new Vector2(cell.x, cell.y)));
+            _liveCells.Add(cell);
+        }
     }
-
-    //public void UpdateCells()
-    //{
-    //    foreach (GameObject citizen in citizens.ToList())
-    //    {
-    //        if (citizen.CompareTag("Dead"))
-    //        {
-    //            citizens.Remove(citizen);
-    //            Destroy(citizen);
-    //        }
-    //    }
-
-    //    liveCells = liveCells.Distinct().ToList();
-
-    //    foreach (Vector3 liveCell in liveCells)
-    //    {
-    //        GameObject prefab;
-    //        prefab = Instantiate(placedCube, liveCell, Quaternion.identity);
-    //        prefab.name = "NewBirth";
-    //        citizens.Add(prefab);
-    //    }
-
-    //    liveCells.Clear();
-    //}
-
 
     public void ResetGame()
     {
@@ -233,6 +242,7 @@ public class Player : MonoBehaviour
         execute = false;
         timer = 0;
         _citizens.Clear();
+        _liveCells.Clear();
     }
 
     public GameObject GetPooledCell(Vector2 pos)
@@ -244,7 +254,7 @@ public class Player : MonoBehaviour
             cell = _cellPool.FirstOrDefault();
             _cellPool.Remove(cell);
             cell.transform.position = pos;
-            cell.SetActive(true);
+            cell.GetComponent<Renderer>().enabled = true;
         }
         else
         {
@@ -257,6 +267,6 @@ public class Player : MonoBehaviour
     public void ReturnCellToPool(GameObject cell)
     {
         _cellPool.Add(cell);
-        cell.SetActive(false);
+        cell.GetComponent<Renderer>().enabled = false;
     }
 }
