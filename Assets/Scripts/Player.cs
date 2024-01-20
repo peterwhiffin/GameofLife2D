@@ -2,7 +2,8 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Linq;
-
+using Unity.Jobs;
+using Unity.Collections;
 
 public class Player : MonoBehaviour
 {
@@ -152,6 +153,7 @@ public class Player : MonoBehaviour
         UpdateCells();
     }
 
+  
     public int CheckNeighbors(Vector2Int pos, int limit = 4, bool dead = false)
     {
         int neighbors = 0;
